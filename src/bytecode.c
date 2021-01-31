@@ -14,43 +14,37 @@
 
 #include "jamlisp.h"
 
-void free_object(object_heap * heap, jamlisp_object_index obj){
-  heap->object_heap[obj].type = JAMLISP_CONS;
-  heap->object_heap[obj].c.cdr = heap->free_object;
+typedef jamlisp_object object;
+
+void free_object(cons_heap * heap, jamlisp_object_index obj){
+  heap->cons_heap[obj].car = jamlisp_nil();
+  heap->cons_heap[obj].cdr.cons = heap->free_object;
+  heap->cons_heap[obj].cdr.type = JAMLISP_CONS;
   heap->free_object = obj;
 }
 
-jamlisp_object_index new_object(object_heap * heap){
+jamlisp_object_index new_object(cons_heap * heap){
   if(heap->free_object == 0){
     size_t new_count = (heap->heap_size + 2) * 1.5;
-    heap->object_heap = realloc(heap->object_heap, new_count * sizeof(heap->object_heap[0]));
+    heap->cons_heap = realloc(heap->cons_heap, new_count * sizeof(heap->cons_heap[0]));
     for(size_t i = heap->heap_size; i < new_count; i++){
       free_object(heap, i);
     }
     heap->heap_size = new_count;
   }
   jamlisp_object_index out = heap->free_object;
-  heap->free_object = heap->object_heap[out].c.cdr;
+  heap->free_object = heap->cons_heap[out].cdr.cons;
   return out;
 }
 
-jamlisp_object object_get(const object_heap * heap, jamlisp_object_index idx){
-  return heap->object_heap[idx];
-}
-
-jamlisp_object_index new_clone(object_heap * heap, jamlisp_object prototype){
-  var idx = new_object(heap);
-  heap->object_heap[idx] = prototype;
-  return idx;
+cons cons_get(const cons_heap * heap, jamlisp_object_index idx){
+  return heap->cons_heap[idx];
 }
 
 typedef jamlisp_stack_frame stack_frame;
 
 struct _jamlisp_context {
-  void * registers;
-  u64 reg_ptr;
-  u64 reg_cap;
-
+  
   jamlisp_opcodedef * opcodedefs;
   
   size_t opcodedef_count;
@@ -58,13 +52,23 @@ struct _jamlisp_context {
   jamlisp_opcode current_opcode;
 
   hash_table * opcode_names;
-  
+  hash_table * symbol_names;
+  jamlisp_object * symbol_values;
+  size_t symbol_values_count;
+  u32 symbol_counter;
   stack_frame * stack;
   size_t stack_capacity;
   
-  object_heap heap;
+  cons_heap heap;
 
   stack value_stack;
+
+
+  // control stack.
+  stack_frame * frames;
+  size_t frames_capacity;
+  u32 frame_index;
+  
 };
 
 
@@ -72,26 +76,76 @@ void jamlisp_free(jamlisp_context * ctx, jamlisp_object_index obj){
   free_object(&ctx->heap, obj);
 }
 
-jamlisp_object_index jamlisp_new_object(jamlisp_context * ctx){
-  return new_object(&ctx->heap);
-}
-jamlisp_object_index jamlisp_new_object2(jamlisp_context * ctx, jamlisp_object prototype){
-  return new_clone(&ctx->heap, prototype);
+jamlisp_array * jamlisp_array_new(jamlisp_type t, void * data, size_t size){
+  jamlisp_array * a = alloc0(sizeof(a[0]));
+  a->data = iron_clone(data, size);
+  a->type = t;
+  a->size = size;
+  return a;
 }
 
+void ensure_size(void ** ptr, size_t elem_size, size_t * count, size_t new_count){
+  *ptr = realloc(*ptr, elem_size * new_count);
+}
+
+void symbol_set_value(jamlisp_context * ctx, jamlisp_object symbol, jamlisp_object value){
+  ASSERT(jamlisp_symbolp(symbol));
+  if(ctx->symbol_values_count < symbol.symbol){
+    ctx->symbol_values = realloc(ctx->symbol_values, sizeof(ctx->symbol_values[0]) * (symbol.symbol + 10));
+    for(u32 i = ctx->symbol_values_count; i < symbol.symbol+10; i++){
+      ctx->symbol_values[i] = (jamlisp_object){0};
+    }
+    ctx->symbol_values_count = symbol.symbol + 10;
+  }
+
+  ctx->symbol_values[symbol.symbol] = value; 
+}
+
+jamlisp_object symbol_get_value(jamlisp_context * ctx, jamlisp_object symbol){
+  ASSERT(jamlisp_symbolp(symbol));
+  if(ctx->symbol_values_count >= symbol.symbol)
+    return ctx->symbol_values[symbol.symbol];
+  return jamlisp_nil();
+}
+
+void jamlisp_load_fcn_bytecode(jamlisp_context * ctx, jamlisp_object symbol, void * code, size_t code_size){
+  jamlisp_object symbol_value = symbol_get_value(ctx, symbol);
+  if(!jamlisp_nilp(symbol_value))
+    ERROR("Function is already defined\n"); // remove this sanity check later.
+
+  symbol_value.type = JAMLISP_ARRAY;
+  symbol_value.ptr = jamlisp_array_new(JAMLISP_BYTE, code, code_size);
+  symbol_set_value(ctx, symbol, symbol_value);
+}
 
 jamlisp_context * jamlisp_new(){
   jamlisp_context * ctx = alloc0(sizeof(*ctx));
   ctx->opcode_names = ht_create_strkey(sizeof(jamlisp_opcode));
+  ctx->symbol_names = ht_create_strkey(sizeof(ctx->symbol_counter));
   {
     jamlisp_load_opcode(ctx, JAMLISP_OPCODE_ADD, "ADD", 2);
     jamlisp_load_opcode(ctx, JAMLISP_OPCODE_CONS, "CONS", 2);
     jamlisp_load_opcode(ctx, JAMLISP_OPCODE_PRINT, "PRINT", 1);
     jamlisp_load_opcode(ctx, JAMLISP_OPCODE_INT, "INT", 0);
   }
-
+  {
+    u8 code[] = {JAMLISP_OPCODE_ADD, JAMLISP_MAGIC, JAMLISP_OPCODE_LOCAL, 0, JAMLISP_MAGIC,JAMLISP_OPCODE_LOCAL, 1, JAMLISP_MAGIC};
+    jamlisp_load_fcn_bytecode(ctx, jamlisp_symbol(ctx, "+"), code, array_count(code));
+  }
+  
   return ctx;
 }
+
+jamlisp_object jamlisp_symbol(jamlisp_context * ctx, const char * name){
+  jamlisp_object out = {0};
+  out.type = JAMLISP_SYMBOL;
+  if(ht_get(ctx->symbol_names, &name, &out.symbol))
+    return out;
+  out.symbol = ++ctx->symbol_counter;
+  ht_set(ctx->symbol_names, &name, &out.symbol);
+  return out;
+}
+
 
 #ifdef NO_STDLIB
 void  memcpy(void *, const void *, unsigned long);
@@ -99,45 +153,91 @@ void * realloc(void *, unsigned long);
 void memset(void *, int chr, unsigned long );
 #endif
 
-void jamlisp_push_object(jamlisp_context * ctx, jamlisp_object obj){
-  var idx = jamlisp_new_object2(ctx, obj);
-  stack_push(&ctx->value_stack, &idx, sizeof(idx));
+void jamlisp_push(jamlisp_context * ctx, jamlisp_object obj){
+  stack_push(&ctx->value_stack, &obj, sizeof(obj));
 }
 
 void jamlisp_push_i64(jamlisp_context * ctx, i64 value){
   jamlisp_object v =
     {
      .type = JAMLISP_INT64,
-     .large_int = value
+     .int64 = value
     };
   
-  jamlisp_push_object(ctx, v);
+  jamlisp_push(ctx, v);
 }
 
-jamlisp_object_index jamlisp_pop(jamlisp_context * ctx){
-  jamlisp_object_index idx;
+void jamlisp_push_symbol(jamlisp_context * ctx, u32 value){
+  jamlisp_object v =
+    {
+     .type = JAMLISP_SYMBOL,
+     .int64 = value
+    };
+  
+  jamlisp_push(ctx, v);
+}
+
+
+jamlisp_object jamlisp_pop(jamlisp_context * ctx){
+  jamlisp_object idx;
   stack_pop(&ctx->value_stack, &idx, sizeof(idx));
   return idx;
 }
 
-jamlisp_object jamlisp_pop_object(jamlisp_context * ctx){
-  var o = jamlisp_pop(ctx);
-  var od = object_get(&ctx->heap, o);
-  free_object(&ctx->heap, o);
-  return od;
+i64 jamlisp_pop_i64(jamlisp_context * ctx){
+  var od = jamlisp_pop(ctx);
+  ASSERT(od.type == JAMLISP_INT64);
+  return od.int64;
 }
 
-i64 jamlisp_pop_i64(jamlisp_context * ctx){
-  var od = jamlisp_pop_object(ctx);
-  ASSERT(od.type == JAMLISP_INT64);
-  return od.large_int;
+bool jamlisp_nilp(jamlisp_object obj){
+  return obj.type == JAMLISP_NIL;
 }
+
+bool jamlisp_symbolp(jamlisp_object obj){
+  return obj.type == JAMLISP_SYMBOL;
+}
+
+bool jamlisp_consp(jamlisp_object obj){
+  return obj.type == JAMLISP_CONS;
+}
+
+jamlisp_object jamlisp_i64(i64 v){
+  return (jamlisp_object) {.type = JAMLISP_INT64, .int64 = v}; 
+}
+jamlisp_object jamlisp_i32(i32 v){
+  return (jamlisp_object) {.type = JAMLISP_INT32, .fixnum = v}; 
+}
+jamlisp_object jamlisp_f32(f32 v){
+  return (jamlisp_object) {.type = JAMLISP_F32, .float32 = v}; 
+}
+jamlisp_object jamlisp_f64(f64 v){
+  return (jamlisp_object) {.type = JAMLISP_F64, .float64 = v}; 
+}
+jamlisp_object jamlisp_nil(){
+  return (jamlisp_object) {0}; 
+}
+jamlisp_object jamlisp_new_object(){
+  return jamlisp_nil();
+}
+
+jamlisp_object jamlisp_new_cons(jamlisp_context * ctx){
+  jamlisp_object_index idx = new_object(&ctx->heap);
+  return (jamlisp_object){.type = JAMLISP_CONS, .cons = idx};
+}
+void jamlisp_free_cons(jamlisp_context * ctx, jamlisp_object * cons){
+  ASSERT(jamlisp_consp(*cons));
+  free_object(&ctx->heap, cons->cons);
+  *cons = jamlisp_nil();
+}
+
+
 
 jamlisp_object jamlisp_add(jamlisp_object a, jamlisp_object b){
   jamlisp_object v = {0};
   if(a.type == JAMLISP_INT64 && b.type == JAMLISP_INT64){
     v.type = a.type;
-    v.large_int = a.large_int + b.large_int;
+    v.int64 = a.int64 + b.int64;
     return v;
   }
   ERROR("Unsupported ADD!\n");
@@ -147,7 +247,7 @@ jamlisp_object jamlisp_add(jamlisp_object a, jamlisp_object b){
 void jamlisp_print(jamlisp_object obj){
   switch(obj.type){
   case JAMLISP_INT64:
-    logd("%lld", obj.large_int);
+    logd("%lld", obj.int64);
     break;
   case JAMLISP_INT32:
     logd("%i", obj.fixnum);
@@ -156,49 +256,6 @@ void jamlisp_print(jamlisp_object obj){
     logd("OBJECT(%i)", obj.type);
   }
 }
-
-stack * jamlisp_get_register(jamlisp_context * ctx, jamlisp_register * registerID){
-  static u32 register_counter = 1;
-  if(registerID->id == 0){
-    registerID->id = register_counter;
-    register_counter += registerID->size;
-  }
-  
-  while(registerID->id + registerID->size >= ctx->reg_cap){
-    u32 new_size = (registerID->id + registerID->size) * 2;
-    ctx->registers = realloc(ctx->registers, new_size);
-    // set all new registers to 0.
-    memset(ctx->registers + ctx->reg_cap, 0, new_size - ctx->reg_cap);
-    ctx->reg_cap = new_size;
-  }
-  
-  // this assert is for catching possibily errors early. New registers should not be created very often.
-  // in the future remove this.
-  ASSERT(ctx->reg_cap < 10000); 
-  return ctx->registers + registerID->id;
-}
-
-void jamlisp_stack_register_push(jamlisp_context * ctx, jamlisp_stack_register * reg, const void * value){
-  reg->stack.size = sizeof(stack);
-  stack * stk = jamlisp_get_register(ctx, &reg->stack);
-  stack_push(stk, value, reg->size);
-}
-
-void jamlisp_stack_register_pop(jamlisp_context * ctx, jamlisp_stack_register * reg, void * value){
-  reg->stack.size = sizeof(stack);
-  stack * stk = jamlisp_get_register(ctx, &reg->stack);
-  stack_pop(stk, value, reg->size);
-}
-
-bool jamlisp_stack_register_top(jamlisp_context * ctx, jamlisp_stack_register * reg, void * value){
-  reg->stack.size = sizeof(stack);
-  stack * stk = jamlisp_get_register(ctx, &reg->stack);
-  if(stk->count == 0) return false;
-  if(value != NULL)
-    stack_top(stk, value, reg->size);
-  return true;
-}
-
 
 void jamlisp_load_opcode(jamlisp_context * ctx, jamlisp_opcode op, const char * name, size_t arg_count){
     
@@ -228,27 +285,10 @@ jamlisp_opcode jamlisp_current_opcode(jamlisp_context * ctx){
   return ctx->current_opcode;
 }
 
-jamlisp_stack_register node_callback_reg = {.size = sizeof(node_callback), .stack = {0}};
-
-void node_callback_push(jamlisp_context * ctx, node_callback callback){
-  jamlisp_stack_register_push(ctx, &node_callback_reg, &callback);
-}
-
-void node_callback_pop(jamlisp_context * ctx){
-  jamlisp_stack_register_pop(ctx, &node_callback_reg, NULL);
-}
-
-node_callback node_callback_get(jamlisp_context * ctx){
-  node_callback callback = {0};
-  jamlisp_stack_register_top(ctx, &node_callback_reg, &callback);
-  return callback;
-}
-
 typedef struct{
   jamlisp_opcode opcode;
   const char * name;
 }jamlisp_opcode_name2;
-
 
 const char * jamlisp_opcode_name(jamlisp_context * ctx, jamlisp_opcode opcode){
   if(opcode >= ctx->opcodedef_count){
@@ -262,42 +302,35 @@ jamlisp_opcode jamlisp_opcode_parse(jamlisp_context * ctx, const char * name){
   jamlisp_opcode opcode;
   if(!ht_get(ctx->opcode_names, &name, &opcode)){
     return JAMLISP_OPCODE_NONE;
-  }
-  
+  }  
   return opcode;
 }
 
-
-
 void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
+  if(NULL == ctx->frames){
+    ctx->frames = alloc0(sizeof(ctx->frames[0]) * 64);
+    ctx->frames_capacity = 64;
+  }
   
-  stack_frame ** frames = &ctx->stack;
-  size_t * stack_capacity = &ctx->stack_capacity;
-
-  stack_frame * frame = *frames; // select the first frame.
-  stack_frame * end_frame = *frames + *stack_capacity;
   while(true){
 
-    if(frame == end_frame){
-      *stack_capacity = *stack_capacity == 0 ? 64 : *stack_capacity * 2;
-      *frames = realloc(*frames, sizeof(*frame) * *stack_capacity);
-      frame = *frames + (end_frame - frame);
-      end_frame = *frames + *stack_capacity;
+    if(ctx->frame_index == ctx->frames_capacity){
+      ctx->frames_capacity *= 2;
+      ctx->frames = realloc(ctx->frames, sizeof(ctx->frames[0]) * ctx->frames_capacity);
     }
-    *frame = (stack_frame){0};
-    
+    var frame = ctx->frames + ctx->frame_index;
+    frame[0] = (stack_frame){0};
     frame->node_id = reader->offset;
     if(reader->offset == reader->size)
       break;
     ctx->current_opcode = frame->opcode = io_read_u64_leb(reader);
-    
+    logd("OPCODE %u\n", frame->opcode);
     if(frame->opcode == JAMLISP_OPCODE_NONE){
       break;
     }
 
     frame->child_count = ctx->opcodedefs[frame->opcode].arg_count;
-    i64 value;
-
+    
     switch(frame->opcode){
     case JAMLISP_OPCODE_NONE:
       ERROR("INVALID OPCODE");
@@ -309,12 +342,17 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
     case JAMLISP_OPCODE_CONS:
       break;
     case JAMLISP_OPCODE_INT:
-      value = io_read_i64_leb(reader);
-      jamlisp_push_i64(ctx, value);
+      logd("ENTER INT\n");
+      jamlisp_push_i64(ctx, io_read_i64_leb(reader));
       frame->child_count = 0;
       break;
-      //default:
-      //ERROR("No Handler for opcode!");  
+    case JAMLISP_OPCODE_CALL:
+      frame->call = io_read_u32_leb(reader);
+      frame->child_count = io_read_u32_leb(reader);
+      logd("ENTER CALL %i %i\n", frame->call, frame->child_count);
+      break;
+    default:
+      ERROR("No Handler for opcode!");  
     }
     
     var magic = io_read_u64_leb(reader);
@@ -335,15 +373,27 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 	  switch(frame->opcode){
 	  case JAMLISP_OPCODE_ADD:
 	    {
-	      var a = jamlisp_pop_object(ctx);
-	      var b = jamlisp_pop_object(ctx);
+	      var a = jamlisp_pop(ctx);
+	      var b = jamlisp_pop(ctx);
 	      var c = jamlisp_add(a, b);
-	      jamlisp_push_object(ctx, c);
+	      jamlisp_push(ctx, c);
 	    }
 	    break;
+	  case JAMLISP_OPCODE_CALL:
+	    {
+	      logd("EXIT CALL %i \n", frame->call);
+	      jamlisp_object s = {.type = JAMLISP_SYMBOL, .symbol = frame->call};
+	      s = symbol_get_value(ctx, s);
+	      logd("EXIT CALL %i %i\n", s.type, s.ptr->type);
+	      io_reader rd2 = {.offset = 0, .data = s.ptr->data, .size = s.ptr->size};
+	      jamlisp_iterate_internal(ctx, &rd2);
+	      
+	    }
+	    break;
+
 	  case JAMLISP_OPCODE_PRINT:
 	    {
-	      var a = jamlisp_pop_object(ctx);
+	      var a = jamlisp_pop(ctx);
 	      jamlisp_print(a);
 	    }
 	    break;
@@ -351,7 +401,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 	    break;
 	  }
 	  
-	if(frame == &(*frames)[0])
+	if(frame == ctx->frames)
 	  break;
 	frame = frame - 1;
 	frame->child_count -= 1;
@@ -359,14 +409,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
     }
   }
 }
-/*
-void jamlisp_3d_init(jamlisp_context * ctx);
 
-void handle_opcode(jamlisp_context * registers, void * userdata){
-  UNUSED(registers, userdata);
-}
-
-*/
 void jamlisp_iterate(jamlisp_context * reg, io_reader * reader){
   jamlisp_iterate_internal(reg, reader);
 }
@@ -388,142 +431,3 @@ void jamlisp_test_load(jamlisp_context * ctx, io_writer * wd){
   wd->size = wd->offset;
   wd->offset = 0;
 }
-		     /*
-typedef struct{
-  jamlisp_context * ctx;
-  int stack_level;
-  u64 last_id;
-  bool prev_enter;
-  io_writer * wd;
-
-}test_render_context;
-
-void test_after_enter(stack_frame * frame, void * userdata){
-  test_render_context * ctx = userdata;
-  ctx->last_id = frame->node_id;
-  ctx->prev_enter = true;
-  var wd = ctx->wd;
-  io_write_str(wd, "\n");
-  for(int i = 0; i < ctx->stack_level; i++)
-    io_write_str(wd, " ");
-  io_write_fmt(wd, "(%s", jamlisp_opcode_name(ctx->ctx, ctx->ctx->current_opcode));
-  var reg = ctx->ctx;
-  ASSERT(frame->opcode < ctx->opcodedef_count);
-  var handler = ctx->opcodedefs[frame->opcode];
-  for(u32 i = 0; i < handler.typesig_count; i++){
-    let typesig = handler.typesig[i];
-    switch(typesig.signature)
-      {
-      case JAMLISP_F32A:
-	{
-	  f32_array array;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &array));
-	  for(size_t i = 0; i < array.count; i++){
-	    io_write_fmt(wd, " %g", array.array[i]);
-	  }
-	}
-	break;
-      case JAMLISP_STRING:
-	{
-	  char * t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " \"%s\"", t);
-	  break;
-	}
-      case JAMLISP_F32:
-	{
-	  f32 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " %g", t);
-	  break;
-	}
-      case JAMLISP_F64:
-	{
-	  f64 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " %g", t);
-	  break;
-	}
-      case JAMLISP_VEC2:
-	{
-	  vec2 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " %g %g", t.x, t.y);
-	  break;
-	}
-      case JAMLISP_VEC3:
-	{
-	  vec3 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " %g %g %g", t.x, t.y, t.z);
-	  break;
-	}
-      case JAMLISP_VEC4:
-	{
-	  vec4 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " %g %g %g %g", t.x, t.y, t.z, t.w);
-	  break;
-	}
-      case JAMLISP_UINT32:
-	{
-	  u32 t;
-	  ASSERT(jamlisp_stack_register_top(reg, typesig.reg, &t));
-	  io_write_fmt(wd, " 0x%x", t);
-	  break;
-	}
-
-      default:
-	ERROR("UNSUPPORTED\n");
-	break;
-      }
-  }
-  
-  ctx->stack_level += 1;
-}
-
-void test_before_exit(stack_frame * frame, void * userdata){
-  test_render_context * ctx = userdata;
-  var wd = ctx->wd;
-  
-  if(frame->node_id == ctx->last_id){
-    io_write_str(wd, ")");
-    ctx->stack_level -= 1;
-    return;
-  }
-  if(ctx->prev_enter){
-    ctx->prev_enter = false;
-  }io_write_str(wd, ")");
-  
-  ctx->stack_level -= 1;
-}
-void test_jamlisp_load_lisp();
-io_reader io_from_bytes(const void * bytes, size_t size);
-void test_write_lisp(jamlisp_context * reg, void * buffer, size_t size){
-  
-  io_writer wd = {0};
-  test_render_context rctx = {.ctx = reg, .stack_level = 0 , .wd = &wd};
-  
-  node_callback cb = {.after_enter = test_after_enter,
-		      .before_exit = test_before_exit,
-		      .userdata = &rctx};
-  node_callback_push(reg, cb);
-  
-  io_reader rd = io_from_bytes(buffer, size);
-  jamlisp_iterate(reg, &rd);
-  io_write_u8(&wd, 0);
-  logd("%s", wd.data);
-  logd("\n");
-  node_callback_pop(reg);
-  
-}
-
-void jamlisp_test(){
-  binary_io buffer = {0};
-  lisp_to_bytes_str("(cons 1 2)", &buffer);
-  io_writer buffer2 = {0};
-  buffer.length = buffer.offset;
-  buffer.offset = 0;
-  bytes_to_lisp(&buffer, &buffer2);
-
-  }*/

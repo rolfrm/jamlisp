@@ -10,7 +10,7 @@
 #include <iron/linmath.h>
 #include <microio.h>
 
-#include "binui.h"
+#include "jamlisp.h"
 
 
 typedef struct{
@@ -182,7 +182,6 @@ string_reader read_f64(string_reader rd, io_writer * buffer, f64 * out){
   char * tail = NULL;
   
   *out = strtod(str, &tail);
-  //logd("reading %s\n", str);
   if(*str == 0 || tail != (str + buffer->offset - 1)){
     logd("Done!\n");
     rd.error = 1;
@@ -197,9 +196,14 @@ string_reader read_integer(string_reader rd, io_writer * buffer, i64 * out){
   io_reset(buffer);
   rd = skip_while(rd, is_whitespace);
   rd = read_until(rd, buffer, is_endexpr);
+  if(buffer->offset == 0){
+    rd.error = 1;
+    return rd;
+  }
   char * str = buffer->data;
   for(size_t i = 0; i < buffer->offset; i++){
     var c = str[i];
+
     if(c == '-'){
       negative = true;
       continue;
@@ -222,140 +226,36 @@ string_reader read_integer(string_reader rd, io_writer * buffer, i64 * out){
 }
 
 
-string_reader parse_sub(binui_context * ctx, string_reader rd, io_writer * write){
+string_reader parse_sub(jamlisp_context * ctx, string_reader rd, io_writer * write){
+  rd = skip_while(rd, is_whitespace);
+  io_writer name_buffer = {0};
+  {
+    i64 integer;
+    string_reader rd_int = read_integer(rd, &name_buffer, &integer);
+    if(rd_int.error == 0){
+      logd("LOAD int: %i\n", integer);
+      io_write_u8(write, JAMLISP_OPCODE_INT);
+      io_write_i64_leb(write, integer);
+
+      io_writer_clear(&name_buffer);
+      io_write_u32_leb(write, JAMLISP_MAGIC);
+      return rd_int;
+    }
+  }
   rd = skip_untilc(rd, '(');
   rd.offset += 1;
-  rd = skip_while(rd, is_whitespace);
   
-  io_writer name_buffer = {0};
+
   var rd4 = read_until(rd, &name_buffer, is_endexpr);
   ASSERT(!rd4.error);
   io_write_u8(&name_buffer, 0);
- 
-  binui_opcode opcode = binui_opcode_parse(ctx, name_buffer.data);
-  io_write_u8(write, opcode);
+
+  jamlisp_object sym = jamlisp_symbol(ctx, name_buffer.data);
+  logd("SYMBOL: %s\n", name_buffer.data);
   io_reset(&name_buffer);
   string_reader rd_after;
   rd4 = skip_while(rd4, is_whitespace);
-  binui_opcodedef type = binui_get_opcodedef(ctx, opcode);
-
-  for(size_t i = 0; i < type.typesig_count; i++){
-    let type = type.typesig[i];
-    size_t count = 0;
-    switch(type.signature){
-    case BINUI_VEC2:
-      count = 2;
-      goto handle_float;
-      break;  
-    case BINUI_VEC3:
-      count = 3;
-      goto handle_float;
-      break;
-    case BINUI_VEC4:
-      count = 4;
-      goto handle_float;
-      
-    case BINUI_F32:
-      count = 1;
-    handle_float:;
-      for(size_t i = 0; i < count; i++){
-	rd4 = skip_while(rd4, is_whitespace);
-	f64 x = 0;
-	rd4 = read_f64(rd4, &name_buffer, &x);
-	io_write_f32(write, x);
-      }
-      break;
-    case BINUI_F32A:
-      {
-	io_writer numbers_buffer = {0};
-	u64 count = 0;
-	while(true){
-	  rd4 = skip_while(rd4, is_whitespace);
-	  f64 x = 0;
-	  var rd4_2 = read_f64(rd4, &name_buffer, &x);
-	  if(rd4_2.error != 0){
-	    break;
-	  }
-	  rd4 = rd4_2;
-	  count += 1;
-	  io_write_f32(&numbers_buffer, x);
-	}
-	io_write_u64_leb(write, count);
-	io_write(write, numbers_buffer.data, numbers_buffer.offset);
-	io_writer_clear(&numbers_buffer);
-      }
-      break;
-    case BINUI_INT8:
-    case BINUI_INT16:
-    case BINUI_INT32:
-    case BINUI_INT64:
-      //case BINUI_UINT8:
-      //case BINUI_UINT16:
-    case BINUI_UINT32:
-    case BINUI_UINT64:
-    case BINUI_INT64_LEB:
-      {
-	i64 x = 0;
-	
-	var rd5 = read_integer(rd4, &name_buffer, &x);
-	if(rd5.error != 0){
-	  rd5 = read_hex(rd4, &name_buffer, (u64 *) &x);
-	}
-	if(rd5.error != 0)
-	  ERROR("Unable to read integer");
-	rd4 = rd5;
-
-	switch(type.signature){
-	case BINUI_INT8:
-	  io_write_i8(write, x);
-	  break;
-	case BINUI_INT16:
-	  io_write_i16(write, x);
-	  break;
-	case BINUI_INT32:
-	  io_write_i32(write, x);
-	  break;
-	case BINUI_INT64:
-	  io_write_i64(write, x);
-	  break;
-	  /*case BINUI_UINT8:
-	  io_write_u8(write, x);
-	  break;
-	case BINUI_UINT16:
-	  io_write_u16(write, x);
-	  break;*/
-	case BINUI_UINT32:
-	  io_write_u32(write, x);
-	  break;
-	case BINUI_UINT64:
-	  io_write_u64(write, x);
-	  break;
-	
-	case BINUI_INT64_LEB:
-	  io_write_i64_leb(write, x);
-	  break;
-	default:
-	  ERROR("UNSUPPORTED TYPE");
-	  break;
-	}
-      }
-      break;
-    case BINUI_STRING:
-      io_reset(&name_buffer);
-      rd4 = read_str(rd4, &name_buffer);
-      if(rd4.error == 0){
-	io_write_u8(&name_buffer, 0);
-	io_write_strn(write, name_buffer.data);
-      }else{
-	ERROR("Unable to read string");
-      }
-      break;
-    default:
-      ERROR("UNSUPPORTED TYPE\n");
-      break;
-    }
   
-  }
   rd_after = rd4;
   io_reset(&name_buffer);
   u32 child_count = 0;
@@ -363,46 +263,41 @@ string_reader parse_sub(binui_context * ctx, string_reader rd, io_writer * write
     var rd2 = skip_while(rd_after, is_whitespace);
     
     char next = next_byte(rd2);
-    if(next == '('){
-      rd_after = parse_sub(ctx, rd2, &name_buffer);
-      child_count += 1;
-      continue;
-    }
-    else if(next == ')'){
+    if(next == ')'){
       rd2.offset += 1;
       rd_after = rd2;
       break;
     }
-    else{
-      logd("Unexpected token '%c'", next);
-      rd2.error = 1;
-      rd_after = rd2;
+    rd2 = parse_sub(ctx, rd2, &name_buffer);
+    if(rd2.error != 0){
+      ERROR("could not parse sub expression\n");
       break;
     }
+    rd_after = rd2;
+    child_count += 1;
   }
-  if(type.has_children){
-    
-    io_write_u32_leb(write, child_count);
-  }
-  io_write_u32_leb(write, BINUI_MAGIC);
+  io_write_u32_leb(write, JAMLISP_OPCODE_CALL);
+  io_write_u32_leb(write, sym.symbol);
+  io_write_u32_leb(write, child_count);
+  io_write_u32_leb(write, JAMLISP_MAGIC);
   
   io_write(write, name_buffer.data, name_buffer.offset);
   io_writer_clear(&name_buffer);
   return rd_after;
 }
 
-void binui_load_lisp(binui_context * ctx, io_reader * rd, io_writer * write){
+void jamlisp_load_lisp(jamlisp_context * ctx, io_reader * rd, io_writer * write){
   string_reader r = {.rd = rd, .offset = io_offset(rd)};
   r = parse_sub(ctx, r, write);
   if(r.error){
     ERROR("ERROR!\n");
   }
-  io_write_i8(write, BINUI_OPCODE_NONE);
+  io_write_i8(write, JAMLISP_OPCODE_NONE);
 }
 
 
-void test_binui_string_reader(){
-  logd("TEST Binui String Reader\n");
+void test_jamlisp_string_reader(){
+  logd("TEST Jamlisp String Reader\n");
   const char * target = "   \n (color #112233fFff -123)";
 
   io_reader rd = io_from_bytes(target, strlen(target) + 1);
@@ -455,18 +350,19 @@ void test_binui_string_reader(){
 }
 
 
-void binui_load_lisp_string(binui_context * reg, io_writer * wd, const char * target){
+void jamlisp_load_lisp2(jamlisp_context * reg, io_writer * wd, const char * target){
   io_reader rd = io_from_bytes(target, strlen(target) + 1);
-  binui_load_lisp(reg, &rd, wd);
+  jamlisp_load_lisp(reg, &rd, wd);
 }
 
-void test_binui_lisp_loader(){
-  logd("TEST Binui Lisp Loader\n");
+
+void test_jamlisp_lisp_loader(){
+  logd("TEST Jamlisp Lisp Loader\n");
   {
-    binui_context * reg = binui_new();
+    jamlisp_context * reg = jamlisp_new();
     const char * target = "   \n (color 11223344)";
     io_writer writer = {0};
-    binui_load_lisp_string(reg, &writer, target); 
+    jamlisp_load_lisp2(reg, &writer, target); 
     char * buffer = writer.data;
     for(size_t i = 0; i < writer.offset; i++){
       logd("%x ", buffer[i]);
@@ -475,28 +371,27 @@ void test_binui_lisp_loader(){
   }
   {
     const char * target = "   \n (color 0x44332211 (import \"3d\") (color 0x55443322 (position 1 2 (size 10 10 (rectangle)) (size 20 20 (position 10 5 (rectangle) (size 1 1 (scale 0.5 1.0 0.5 (translate 10 0 10 (rotate 0 0 1 0.5 (rectangle) (polygon 1.0 0.0 0.0  0.0 1.0 0.0 0.0 0.0 0.0)))))))))) (color 0x1)";
-    binui_context * reg = binui_new();
+    jamlisp_context * reg = jamlisp_new();
   
     io_writer writer = {0};
-    binui_load_lisp_string(reg, &writer, target); 
+    jamlisp_load_lisp2(reg, &writer, target); 
     
     io_reader rd2 = io_from_bytes(writer.data, writer.offset);
 
-    binui_iterate(reg, &rd2);
+    jamlisp_iterate(reg, &rd2);
     
     char * buffer = writer.data;
     for(size_t i = 0; i < writer.offset; i++){
       logd("%i ", buffer[i]);
     }
     logd("\nDone loading lisp (%i bytes)\n", writer.offset);
-    test_write_lisp(reg, writer.data, writer.offset);
+    //test_write_lisp(reg, writer.data, writer.offset);
     logd("Rewriting lisp\n");
   }
-  
-
+ 
 }
 
-void test_binui_load_lisp(){
-  test_binui_string_reader();
-  test_binui_lisp_loader();
+void test_jamlisp_load_lisp(){
+  test_jamlisp_string_reader();
+  test_jamlisp_lisp_loader();
 }

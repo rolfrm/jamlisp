@@ -8,6 +8,9 @@ typedef enum{
 	     JAMLISP_OPCODE_DIV,
 	     JAMLISP_OPCODE_INT,
 	     JAMLISP_OPCODE_PRINT,
+	     JAMLISP_OPCODE_CALL,
+	     JAMLISP_OPCODE_LOCAL,
+	     JAMLISP_OPCODE_LET,
 	     JAMLISP_MAGIC = 0x5a,
 }jamlisp_opcode;
 
@@ -16,20 +19,21 @@ typedef enum{
 typedef enum{
 	     JAMLISP_NIL = 0,
 	     JAMLISP_CONS = 1,
-	     JAMLISP_SYMBOL = 2,
+	     JAMLISP_SYMBOL,
 	     JAMLISP_CONS_CONST,
 	     JAMLISP_FIXNUM,
 	     JAMLISP_F32,
 	     JAMLISP_F64,
 	     JAMLISP_INT32,
 	     JAMLISP_INT64,
+	     JAMLISP_BYTE,
 	     JAMLISP_BIGFLOAT,
 	     JAMLISP_STRING,
 	     JAMLISP_FUNCTION,
+	     JAMLISP_ARRAY,
+	     JAMLISP_TYPE,
 	     JAMLISP_TYPE_NONE
 }jamlisp_type;
-
-typedef struct _jamlisp_stack_register jamlisp_stack_register;
 
 typedef struct _jamlisp_context jamlisp_context;
 
@@ -37,28 +41,42 @@ typedef struct _jamlisp_stack_frame jamlisp_stack_frame;
 
 typedef u32 jamlisp_object_index;
 
-struct _cons{
-  jamlisp_object_index car;
-  jamlisp_object_index cdr;
-};
-typedef struct _cons cons;
+
+typedef struct _jamlisp_array jamlisp_array;
+
 
 typedef struct _jamlisp_object{
   union{
     i32 fixnum;
-    i64 large_int;
+    i64 int64;
     u32 symbol;
-    cons c;
+    f32 float32;
+    f64 float64;
+    jamlisp_object_index cons;
+    jamlisp_array * ptr;
   };
   jamlisp_type type;
 }jamlisp_object;
 
+struct _cons{
+  jamlisp_object car;
+  jamlisp_object cdr;
+};
+typedef struct _cons cons;
 
-typedef struct _object_heap{
-  jamlisp_object * object_heap;
+
+struct _jamlisp_array{
+  jamlisp_object_index type;
+  u32 size;
+  void * data;
+};
+
+
+typedef struct _cons_heap{
+  cons * cons_heap;
   size_t heap_size;
   jamlisp_object_index free_object;
-}object_heap;
+}cons_heap;
 
 
 typedef struct{
@@ -68,15 +86,6 @@ typedef struct{
 }jamlisp_opcodedef;
 
 
-typedef struct {
-  u32 size;
-  u32 id;
-}jamlisp_register;
-
-struct _jamlisp_stack_register{
-  u32 size;
-  jamlisp_register stack;
-};
 
 const char * jamlisp_opcode_name(jamlisp_context * ctx, jamlisp_opcode);
 jamlisp_opcode jamlisp_opcode_parse(jamlisp_context * ctx, const char * name);
@@ -86,41 +95,48 @@ void jamlisp_load_opcode(jamlisp_context * ctx, jamlisp_opcode opcode, const cha
 
 jamlisp_opcodedef jamlisp_get_opcodedef(jamlisp_context * ctx, jamlisp_opcode opcode);
 
-void jamlisp_iterate_internal( jamlisp_context * reg, io_reader * reader);
-
-void jamlisp_stack_register_push(jamlisp_context * ctx, jamlisp_stack_register * reg, const void * value);
-void jamlisp_stack_register_pop(jamlisp_context * ctx, jamlisp_stack_register * reg, void * out_value);
-bool jamlisp_stack_register_top(jamlisp_context * ctx, jamlisp_stack_register * reg, void * out_value);
-
-void jamlisp_iterate_internal(jamlisp_context * reg, io_reader * reader);
-
 void jamlisp_iterate(jamlisp_context * reg, io_reader * reader);
 
 void jamlisp_free(jamlisp_context * ctx, jamlisp_object_index obj);
-jamlisp_object_index jamlisp_new_object(jamlisp_context * ctx);
-jamlisp_object_index jamlisp_pop(jamlisp_context * ctx);
+jamlisp_object jamlisp_new_object();
+jamlisp_object jamlisp_pop(jamlisp_context * ctx);
+void jamlisp_push(jamlisp_context * ctx, jamlisp_object obj);
+jamlisp_object jamlisp_top(jamlisp_context * ctx);
+
 void jamlisp_push_i64(jamlisp_context * ctx, i64 value);
 i64 jamlisp_pop_i64(jamlisp_context * ctx);
-
 void jamlisp_print(jamlisp_object obj);
+
+jamlisp_object symbol_get_value(jamlisp_context * ctx, jamlisp_object symbol);
+void symbol_set_value(jamlisp_context * ctx, jamlisp_object symbol, jamlisp_object object);
+
+
+void jamlisp_load_lisp2(jamlisp_context * ctx, io_writer * wd, const char * code);
+void jamlisp_load_lisp(jamlisp_context * ctx, io_writer * wd, io_reader * code);
+
+jamlisp_object jamlisp_i64(i64 v);
+jamlisp_object jamlisp_i32(i32 v);
+jamlisp_object jamlisp_f32(f32 v);
+jamlisp_object jamlisp_f64(f64 v);
+jamlisp_object jamlisp_nil();
+jamlisp_object jamlisp_new_cons(jamlisp_context * ctx);
+void jamlisp_free_cons(jamlisp_context * ctx, jamlisp_object * cons);
+
+bool jamlisp_nilp(jamlisp_object obj);
+bool jamlisp_symbolp(jamlisp_object obj);
+bool jamlisp_integerp(jamlisp_object obj);
+bool jamlisp_consp(jamlisp_object obj);
+
+jamlisp_object jamlisp_symbol(jamlisp_context * ctx, const char * symbol_name);
+
 
 struct _jamlisp_stack_frame{
   u32 opcode;
   u32 child_count;
   u64 node_id;
+  u32 call;
 };
 
-typedef struct{
-  
-  void (* after_enter)(jamlisp_stack_frame * frame, void * userdata);
-  void (* before_exit)(jamlisp_stack_frame * frame, void * userdata);
-  
-  void * userdata;
-}node_callback;
-
-void node_callback_push(jamlisp_context * ctx, node_callback callback);
-node_callback node_callback_get(jamlisp_context * ctx);
-void node_callback_pop(jamlisp_context * ctx);
 void jamlisp_3d_init(jamlisp_context * ctx);
 
 void jamlisp_load_lisp_string(jamlisp_context * ctx, io_writer * wd, const char * target);

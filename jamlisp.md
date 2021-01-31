@@ -151,7 +151,7 @@ Functions are declared to take a number of arguments.
 
 `(x 1 2)
 ```
-CALL X
+CALL X N (n args).
 INT 1
 INT 2
 ```
@@ -209,3 +209,8 @@ Since WebAssembly is normally 32 bit, I think it would be unwise to use some hea
 I will probably implement some simple mark-and-sweep garbage collector.
 
 The root nodes are bound to symbols in the global scope. Then there is the call stack, which consists primarily of lisp objects. Some of these lisp objects are static and should not be reclaimed by gc.
+
+# Variables
+
+Symbol values is a huge table. This includes function arguments. For a single threaded versoin
+

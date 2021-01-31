@@ -1,5 +1,5 @@
 OPT = -g3 -O0
-LIB_SOURCES1 = stack.c bytecode.c main.c #lisp_parser.c
+LIB_SOURCES1 = stack.c bytecode.c main.c lisp_parser.c
 LIB_SOURCES = $(addprefix src/, $(LIB_SOURCES1)) libmicroio/src/microio.c
 CC = gcc
 TARGET = run
