@@ -114,8 +114,31 @@ void test_run_lisp(){
 }
 
 
+void test_alloc_alg(){
+  logd("test_alloc_alg\n");
+  int * ptr = NULL;
+  size_t ptr_cap = 0;
+  size_t ptr_count = 0;
+  int * a = alloc_elems((void **) &ptr, sizeof(*ptr), &ptr_count, &ptr_cap, 10);
+  int * b = alloc_elems((void **) &ptr, sizeof(*ptr), &ptr_count, &ptr_cap, 10);
+  ASSERT(a == ptr);
+  ASSERT(b == ptr + 10); 
+  int * c = alloc_elems((void **) &ptr, sizeof(*ptr), &ptr_count, &ptr_cap, 10);
+  ASSERT(c == ptr + 20);  
+  for(int i = 0; i < 30; i++){
+    a[i] = i;
+  }
+
+  ASSERT(ptr_count == 30);
+  int * d = alloc_elems((void **) &ptr, sizeof(*ptr), &ptr_count, &ptr_cap, 10);
+  UNUSED(d);
+  logd("test_alloc_alg: %i %i\n", ptr_cap, ptr_count);
+}
+
 
 void run_tests(){
+  test_alloc_alg();
+
   test_heap_objects();
   test_lisp_symbols();
   test_lisp_symbol_values();

@@ -143,6 +143,8 @@ void jamlisp_load_lisp_string(jamlisp_context * ctx, io_writer * wd, const char 
 
 void jamlisp_test_load(jamlisp_context * ctx, io_writer * wd);
 
+// stack
+
 typedef struct{
   void * elements;
   size_t capacity;
@@ -155,3 +157,10 @@ void stack_pop(stack * stk, void * data, size_t count);
 void stack_top(stack * stk, void * data, size_t count);
 
 
+
+// utils
+
+void * alloc_elems(void ** ptr, size_t elem_size, size_t * count, size_t * capacity, size_t elem_count);
+
+void ensure_size(void ** ptr, size_t elem_size, size_t * count, size_t new_count);
+size_t grow_elems(void ** ptr, size_t elem_size, size_t * count);

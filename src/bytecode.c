@@ -25,12 +25,11 @@ void free_object(cons_heap * heap, jamlisp_object_index obj){
 
 jamlisp_object_index new_object(cons_heap * heap){
   if(heap->free_object == 0){
-    size_t new_count = (heap->heap_size + 2) * 1.5;
-    heap->cons_heap = realloc(heap->cons_heap, new_count * sizeof(heap->cons_heap[0]));
-    for(size_t i = heap->heap_size; i < new_count; i++){
+    var prev_count = heap->heap_size;
+    u32 new_count = grow_elems((void **) &heap->cons_heap, sizeof(heap->cons_heap[0]), &heap->heap_size);
+    for(size_t i = prev_count; i < new_count; i++){
       free_object(heap, i);
     }
-    heap->heap_size = new_count;
   }
   jamlisp_object_index out = heap->free_object;
   heap->free_object = heap->cons_heap[out].cdr.cons;
@@ -56,8 +55,8 @@ struct _jamlisp_context {
   jamlisp_object * symbol_values;
   size_t symbol_values_count;
   u32 symbol_counter;
-  stack_frame * stack;
-  size_t stack_capacity;
+  //stack_frame * stack;
+  //size_t stack_capacity;
   
   cons_heap heap;
 
@@ -86,6 +85,24 @@ jamlisp_array * jamlisp_array_new(jamlisp_type t, void * data, size_t size){
 
 void ensure_size(void ** ptr, size_t elem_size, size_t * count, size_t new_count){
   *ptr = realloc(*ptr, elem_size * new_count);
+  memset(*ptr + *count * elem_size, 0, elem_size * (new_count - *count));
+  *count = new_count;
+}
+
+size_t grow_elems(void ** ptr, size_t elem_size, size_t * count){
+  ensure_size(ptr, elem_size, count, (*count + 2) * 1.5);
+  return *count;
+}
+
+void * alloc_elems(void ** ptr, size_t elem_size, size_t * count, size_t * capacity, size_t elem_count){
+  size_t need_capacity = *count + elem_count;
+  while(need_capacity >= *capacity){
+    ensure_size(ptr, elem_size, capacity, *capacity * 1.5 + need_capacity);
+  }
+  
+  void * out = *ptr + *count * elem_size;
+  *count += elem_count;
+  return out;
 }
 
 void symbol_set_value(jamlisp_context * ctx, jamlisp_object symbol, jamlisp_object value){
