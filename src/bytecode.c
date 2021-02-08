@@ -40,37 +40,6 @@ cons cons_get(const cons_heap * heap, jamlisp_object_index idx){
   return heap->cons_heap[idx];
 }
 
-typedef jamlisp_stack_frame stack_frame;
-
-struct _jamlisp_context {
-  
-  jamlisp_opcodedef * opcodedefs;
-  
-  size_t opcodedef_count;
-
-  jamlisp_opcode current_opcode;
-
-  hash_table * opcode_names;
-  hash_table * symbol_names;
-  jamlisp_object * symbol_values;
-  size_t symbol_values_count;
-  u32 symbol_counter;
-  //stack_frame * stack;
-  //size_t stack_capacity;
-  
-  cons_heap heap;
-
-  stack value_stack;
-
-
-  // control stack.
-  stack_frame * frames;
-  size_t frames_capacity;
-  u32 frame_index;
-  
-};
-
-
 void jamlisp_free(jamlisp_context * ctx, jamlisp_object_index obj){
   free_object(&ctx->heap, obj);
 }
@@ -87,6 +56,12 @@ void ensure_size(void ** ptr, size_t elem_size, size_t * count, size_t new_count
   *ptr = realloc(*ptr, elem_size * new_count);
   memset(*ptr + *count * elem_size, 0, elem_size * (new_count - *count));
   *count = new_count;
+}
+
+void ensure_size2(void ** ptr, size_t elem_size, size_t * count, size_t new_count, float growth_factor){
+  if(*count == new_count){
+    ensure_size(ptr, elem_size, count, MAX(new_count * growth_factor, *count + 1));
+  }
 }
 
 size_t grow_elems(void ** ptr, size_t elem_size, size_t * count){
@@ -323,18 +298,17 @@ jamlisp_opcode jamlisp_opcode_parse(jamlisp_context * ctx, const char * name){
   return opcode;
 }
 
-void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
-  if(NULL == ctx->frames){
-    ctx->frames = alloc0(sizeof(ctx->frames[0]) * 64);
-    ctx->frames_capacity = 64;
+void jamlisp_load_frame(jamlisp_context * ctx, io_reader * reader){
+  if(ctx->cframe_count != -1){
+    
   }
+}
+
+void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
   
   while(true){
+    ensure_size2((void **) &ctx->frames, sizeof(ctx->frames[0]), &ctx->frames_capacity, ctx->frame_index, 1.5);
 
-    if(ctx->frame_index == ctx->frames_capacity){
-      ctx->frames_capacity *= 2;
-      ctx->frames = realloc(ctx->frames, sizeof(ctx->frames[0]) * ctx->frames_capacity);
-    }
     var frame = ctx->frames + ctx->frame_index;
     frame[0] = (stack_frame){0};
     frame->node_id = reader->offset;
@@ -361,12 +335,16 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
     case JAMLISP_OPCODE_INT:
       logd("ENTER INT\n");
       jamlisp_push_i64(ctx, io_read_i64_leb(reader));
+      ASSERT(frame->child_count == 0);
       frame->child_count = 0;
       break;
     case JAMLISP_OPCODE_CALL:
       frame->call = io_read_u32_leb(reader);
       frame->child_count = io_read_u32_leb(reader);
+      frame->child_count0 = frame->child_count;
+    
       logd("ENTER CALL %i %i\n", frame->call, frame->child_count);
+      
       break;
     default:
       ERROR("No Handler for opcode!");  
@@ -394,19 +372,34 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 	      var b = jamlisp_pop(ctx);
 	      var c = jamlisp_add(a, b);
 	      jamlisp_push(ctx, c);
+	      logd("Add exit\n");
 	    }
 	    break;
 	  case JAMLISP_OPCODE_CALL:
 	    {
-	      logd("EXIT CALL %i \n", frame->call);
+	      logd("EXIT CALL %i   %i   %i\n", frame->call, frame->child_count, frame->child_count);
 	      jamlisp_object s = {.type = JAMLISP_SYMBOL, .symbol = frame->call};
 	      s = symbol_get_value(ctx, s);
 	      logd("EXIT CALL %i %i\n", s.type, s.ptr->type);
-	      io_reader rd2 = {.offset = 0, .data = s.ptr->data, .size = s.ptr->size};
-	      jamlisp_iterate_internal(ctx, &rd2);
+	      //io_reader rd2 = {.offset = 0, .data = s.ptr->data, .size = s.ptr->size};
+	      {
+		logd("AH\n");
+		jamlisp_object vars[frame->child_count0];
+		for(size_t i = 0; i < frame->child_count0; i++){
+		  vars[frame->child_count - 1 - i] = jamlisp_pop(ctx);
+		}
+		for(size_t i = 0; i < frame->child_count0; i++){
+		  logd("Arg %i\n", vars[i].symbol);
+		}
+	      }
+	      //jamlisp_iterate_internal(ctx, &rd2);
 	      
 	    }
 	    break;
+	  case JAMLISP_OPCODE_INT:{
+	    logd("INT EXIT\n");
+	    break;
+	  }
 
 	  case JAMLISP_OPCODE_PRINT:
 	    {
@@ -418,8 +411,10 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 	    break;
 	  }
 	  
-	if(frame == ctx->frames)
-	  break;
+	  if(frame == ctx->frames){
+	    logd("Exit frame %i\n", frame->opcode);
+	    break;
+	  }
 	frame = frame - 1;
 	frame->child_count -= 1;
       }
@@ -447,4 +442,17 @@ void jamlisp_test_load(jamlisp_context * ctx, io_writer * wd){
   io_write_u8(wd, JAMLISP_MAGIC);
   wd->size = wd->offset;
   wd->offset = 0;
+}
+
+void jamlisp_push_symbol_value(jamlisp_context * ctx, jamlisp_object sym, jamlisp_object value){
+  jamlisp_symbol_value val = {.symbol = sym, .value = symbol_get_value(ctx, sym)};
+  stack_push(&ctx->value_stack, &val, sizeof(val));
+  symbol_set_value(ctx, sym, value);
+}
+
+void jamlisp_pop_symbol_value(jamlisp_context * ctx, jamlisp_object sym){
+  jamlisp_symbol_value val = {0};
+  stack_pop(&ctx->value_stack, &val, sizeof(val));
+  ASSERT(val.symbol.symbol == sym.symbol);
+  symbol_set_value(ctx, sym, val.value);
 }

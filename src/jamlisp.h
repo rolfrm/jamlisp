@@ -86,6 +86,69 @@ typedef struct{
 }jamlisp_opcodedef;
 
 
+struct _jamlisp_stack_frame{
+  u32 opcode;
+  u32 child_count;
+  u64 node_id;
+  u32 call;
+  u32 child_count0;
+};
+
+typedef struct _jamlisp_control_frame{
+
+  io_reader * reader;
+}jamlisp_control_frame;
+
+typedef struct _jamlisp_symbol_value{
+  jamlisp_object symbol;
+  jamlisp_object value;
+
+}jamlisp_symbol_value;
+// stack
+
+typedef struct{
+  void * elements;
+  size_t capacity;
+  size_t count;
+}stack;
+typedef struct _hash_table hash_table;
+
+typedef jamlisp_stack_frame stack_frame;
+
+struct _jamlisp_context {
+  
+  jamlisp_opcodedef * opcodedefs;
+  
+  size_t opcodedef_count;
+
+  jamlisp_opcode current_opcode;
+
+  hash_table * opcode_names;
+  hash_table * symbol_names;
+  jamlisp_object * symbol_values;
+  size_t symbol_values_count;
+  u32 symbol_counter;
+  //stack_frame * stack;
+  //size_t stack_capacity;
+  
+  cons_heap heap;
+
+  stack value_stack;
+
+  jamlisp_control_frame * cframes;
+  size_t cframes_capacity;
+  int cframe_count;
+
+  stack symbol_value_stack;
+  
+  // control stack.
+  stack_frame * frames;
+  size_t frames_capacity;
+  u32 frame_index;
+  
+};
+
+
 
 const char * jamlisp_opcode_name(jamlisp_context * ctx, jamlisp_opcode);
 jamlisp_opcode jamlisp_opcode_parse(jamlisp_context * ctx, const char * name);
@@ -110,6 +173,8 @@ void jamlisp_print(jamlisp_object obj);
 jamlisp_object symbol_get_value(jamlisp_context * ctx, jamlisp_object symbol);
 void symbol_set_value(jamlisp_context * ctx, jamlisp_object symbol, jamlisp_object object);
 
+void jamlisp_pop_symbol_value(jamlisp_context * ctx, jamlisp_object sym);
+void jamlisp_push_symbol_value(jamlisp_context * ctx, jamlisp_object sym, jamlisp_object value);
 
 void jamlisp_load_lisp2(jamlisp_context * ctx, io_writer * wd, const char * code);
 void jamlisp_load_lisp(jamlisp_context * ctx, io_writer * wd, io_reader * code);
@@ -130,12 +195,6 @@ bool jamlisp_consp(jamlisp_object obj);
 jamlisp_object jamlisp_symbol(jamlisp_context * ctx, const char * symbol_name);
 
 
-struct _jamlisp_stack_frame{
-  u32 opcode;
-  u32 child_count;
-  u64 node_id;
-  u32 call;
-};
 
 void jamlisp_3d_init(jamlisp_context * ctx);
 
@@ -143,13 +202,6 @@ void jamlisp_load_lisp_string(jamlisp_context * ctx, io_writer * wd, const char 
 
 void jamlisp_test_load(jamlisp_context * ctx, io_writer * wd);
 
-// stack
-
-typedef struct{
-  void * elements;
-  size_t capacity;
-  size_t count;
-}stack;
 
 
 void stack_push(stack * stk, const void * data, size_t count);

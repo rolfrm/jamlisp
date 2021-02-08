@@ -94,6 +94,23 @@ void test_lisp_symbol_values(){
   symbol_set_value(ctx, sym2, jamlisp_nil());
   ASSERT(jamlisp_nilp(symbol_get_value(ctx, sym2)));
 
+  // test something that could happen when using 'let' with lexically
+  // scoped variable.
+  jamlisp_push_symbol_value(ctx, sym2, jamlisp_i64(1111));
+    
+  for(int i = 11; i < 20; i++){
+    jamlisp_push_symbol_value(ctx, sym1, jamlisp_i64(i));
+    ASSERT(symbol_get_value(ctx, sym1).int64 == i);
+  }
+  for(int i = 19; i >= 11; i--){
+    ASSERT(symbol_get_value(ctx, sym1).int64 == i);
+    jamlisp_pop_symbol_value(ctx, sym1);
+  }
+  
+  ASSERT(symbol_get_value(ctx, sym2).int64 == 1111);
+  jamlisp_pop_symbol_value(ctx, sym2);
+  ASSERT(symbol_get_value(ctx, sym1).int64 == 5);
+  
 }
 
 void test_run_lisp(){
