@@ -308,7 +308,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
   
   while(true){
     ensure_size2((void **) &ctx->frames, sizeof(ctx->frames[0]), &ctx->frames_capacity, ctx->frame_index, 1.5);
-
+    logd("frame index: %i\n", ctx->frame_index);
     var frame = ctx->frames + ctx->frame_index;
     frame[0] = (stack_frame){0};
     frame->node_id = reader->offset;
@@ -360,6 +360,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
     while(true){
       if(frame->child_count > 0){
 	frame = frame + 1;
+	ctx->frame_index += 1;
 	break;
       }
       else
@@ -386,7 +387,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 		logd("AH\n");
 		jamlisp_object vars[frame->child_count0];
 		for(size_t i = 0; i < frame->child_count0; i++){
-		  vars[frame->child_count - 1 - i] = jamlisp_pop(ctx);
+		  vars[frame->child_count0 - 1 - i] = jamlisp_pop(ctx);
 		}
 		for(size_t i = 0; i < frame->child_count0; i++){
 		  logd("Arg %i\n", vars[i].symbol);
@@ -417,6 +418,7 @@ void jamlisp_iterate_internal(jamlisp_context * ctx, io_reader * reader){
 	  }
 	frame = frame - 1;
 	frame->child_count -= 1;
+	ctx->frame_index -= 1;
       }
     }
   }
